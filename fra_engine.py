@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import random
 import json
 import math
 from dataclasses import dataclass, field
@@ -293,7 +293,26 @@ def run_multi_seat_stv(election: Election) -> Dict:
         seats_remaining = election.seat_count - seats_filled
 
         # Completion condition (Sec. 322(b)(4))
-        if seats_remaining <= 0 or len(active) + seats_filled <= election.seat_count:
+        if seats_remaining <= 0:
+            break
+
+        if len(active) + seats_filled <= election.seat_count:
+        # Elect all remaining active candidates
+            for cid in active:
+                status[cid] = "elected"
+
+            rounds.append(
+            {
+            "round": election.round_number,
+            "vote_totals": totals.copy(),
+            "status": status.copy(),
+            "threshold": election.threshold,
+            "action": {
+                "type": "fill_remaining_seats",
+                "candidates": active,
+            },
+        }
+    )
             break
 
         # Check for candidates meeting or exceeding threshold (Sec. 322(b)(2))
@@ -412,40 +431,128 @@ def load_election_from_json(path: str) -> Election:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    required_fields = ["election_id", "seat_count", "mode", "candidates", "ballots", "tie_break_order"]
-    for field_name in required_fields:
-        if field_name not in data:
-            raise ValueError(f"Missing required field '{field_name}' in election JSON")
+    # -----------------------------
+    # Handle metadata wrapper
+    # -----------------------------
+    metadata = data.get("metadata", {})
 
+    # Allow fallback to top-level for compatibility
+    election_id = metadata.get("election_id", data.get("election_id"))
+    seat_count = metadata.get("seat_count", data.get("seat_count"))
+    mode = metadata.get("mode", data.get("mode"))
+    tie_break_order = metadata.get("tie_break_order", data.get("tie_break_order"))
+    max_ranks_allowed = metadata.get("max_ranks_allowed", data.get("max_ranks_allowed"))
+
+    required_fields = {
+        "election_id": election_id,
+        "seat_count": seat_count,
+        "mode": mode,
+        "tie_break_order": tie_break_order,
+    }
+
+    for k, v in required_fields.items():
+        if v is None:
+            raise ValueError(f"Missing required field '{k}' (top-level or metadata)")
+
+    # -----------------------------
+    # Candidates (ignore extra fields)
+    # -----------------------------
     candidates = [
-        Candidate(candidate_id=c["candidate_id"], withdrawn=c.get("withdrawn", False))
-        for c in data["candidates"]
+        Candidate(
+            candidate_id=c["candidate_id"],
+            withdrawn=c.get("withdrawn", False),
+        )
+        for c in data.get("candidates", [])
     ]
 
+    # -----------------------------
+    # Ballots (ignore extra fields)
+    # -----------------------------
     ballots: List[Ballot] = []
-    for b in data["ballots"]:
+    for b in data.get("ballots", []):
         rankings = [
-            Ranking(rank=r["rank"], candidate_ids=r["candidate_ids"])
+            Ranking(
+                rank=r["rank"],
+                candidate_ids=r["candidate_ids"],
+            )
             for r in b.get("rankings", [])
         ]
-        ballots.append(Ballot(ballot_id=b["ballot_id"], rankings=rankings))
 
+        ballots.append(
+            Ballot(
+                ballot_id=b["ballot_id"],
+                rankings=rankings,
+            )
+        )
+
+    # -----------------------------
+    # Build election
+    # -----------------------------
     election = Election(
-        election_id=data["election_id"],
-        seat_count=data["seat_count"],
-        mode=data["mode"],
+        election_id=election_id,
+        seat_count=seat_count,
+        mode=mode,
         candidates=candidates,
         ballots=ballots,
-        tie_break_order=data["tie_break_order"],
-        max_ranks_allowed=data.get("max_ranks_allowed"),
+        tie_break_order=tie_break_order,
+        max_ranks_allowed=max_ranks_allowed,
     )
+
     return election
 
+def generate_json(num_candidates=5, num_ballots=20) -> dict:
+    # Create candidate IDs
+    candidate_ids = [f"C{i}" for i in range(num_candidates)]
 
+    # Candidates
+    candidates = [
+        {"candidate_id": cid, "withdrawn": False}
+        for cid in candidate_ids
+    ]
+
+    ballots = []
+
+    for i in range(num_ballots):
+        # Random ranking order (no duplicates)
+        shuffled = candidate_ids[:]
+        random.shuffle(shuffled)
+
+        # Random number of ranks (can be undervote)
+        num_ranks = random.randint(0, num_candidates)
+
+        rankings = []
+        for rank in range(1, num_ranks + 1):
+            rankings.append({
+                "rank": rank,
+                "candidate_ids": [shuffled[rank - 1]]
+            })
+
+        ballots.append({
+            "ballot_id": f"B{i}",
+            "rankings": rankings
+        })
+
+    # Proper shuffled tie-break order
+    tie_break_order = candidate_ids[:]
+    random.shuffle(tie_break_order)
+
+    return {
+        "election_id": "test_election",
+        "seat_count": random.randint(1, min(3, num_candidates)),
+        "mode": random.choice(["single_seat_rcv", "multi_seat_stv"]),
+        "candidates": candidates,
+        "ballots": ballots,
+        "tie_break_order": tie_break_order
+    }
 # -----------------------------
 # Interactive CLI
 # -----------------------------
 if __name__ == "__main__":
+    def save_test_json(path="test_election.json"):
+        data = generate_json()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    save_test_json()
     print("Fair Representation Act Counting Engine")
     print("Interactive mode.")
     print("Enter path to election JSON (matching the Simulation Layer Design Specification).")
